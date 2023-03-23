@@ -32,6 +32,17 @@ function toChatCompletionRequestMessages(context: Context, replies: Conversation
     }
   })
 
+  // Create single content to have a single conversation in a thread.
+  const tail = messages.length - 1
+  if (messages[0].role !== ChatCompletionRequestMessageRoleEnum.System) {
+    return (messages[tail].role === ChatCompletionRequestMessageRoleEnum.System)
+      ? [{
+          role: ChatCompletionRequestMessageRoleEnum.User,
+          content: messages[tail].content,
+        }]
+      : []
+  }
+
   // Drop past contents to reduce token consumption.
   const nonSystemIndices = messages
     .map((v, i) => v.role !== ChatCompletionRequestMessageRoleEnum.System ? i : -1)
@@ -64,8 +75,9 @@ async function completeChat({ openAiApi, slackBotToken, context, client, say, lo
     inclusive: true,
   })
 
+
   const messages = toChatCompletionRequestMessages(context, replies)
-  if (!messages[0] || messages[0].role !== ChatCompletionRequestMessageRoleEnum.System) {
+  if (messages.length === 0) {
     return
   }
 
@@ -98,14 +110,7 @@ async function completeChat({ openAiApi, slackBotToken, context, client, say, lo
 }
 
 function guardRetry(context: Context, logger: Logger): boolean {
-  if (context.retryNum === undefined || context.retryReason !== 'http_timeout') {
-    // Add debug log to investigate duplicated responses.
-    if (context.retryNum !== undefined) {
-      logger.debug({
-        retryNum: context.retryNum,
-        retryReason: context.retryReason,
-      })
-    }
+  if (context.retryReason !== 'http_timeout') {
     return false
   }
 
@@ -120,8 +125,14 @@ export function setup(app: App, openAiApiKey: string, slackBotToken: string): { 
     apiKey: openAiApiKey
   }))
 
-  app.event('app_mention', async ({ event, client, say, context, logger, body, ...rest }) => {
+  // To have a thread-wide conversation, mentions at the beginning of the thread.
+  // To have a single conversation in a thread, mentions it in the thread.
+
+  app.event('app_mention', async ({ event, client, say, context, logger }) => {
     if (guardRetry(context, logger)) {
+      return
+    }
+    if ('thread_ts' in event) {
       return
     }
 
@@ -130,7 +141,7 @@ export function setup(app: App, openAiApiKey: string, slackBotToken: string): { 
     await completeChat({ openAiApi, slackBotToken, context, client, say, logger, channel, threadTs })
   })
 
-  app.event('message', async ({ event, say, client, context, logger, body, payload, ...rest }) => {
+  app.event('message', async ({ event, say, client, context, logger }) => {
     if (guardRetry(context, logger)) {
       return
     }
