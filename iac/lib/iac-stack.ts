@@ -22,7 +22,7 @@ export class RokiGptStack extends Stack {
         SLACK_BOT_TOKEN: slackBotToken,
         OPEN_AI_API_KEY: openAiApiKey,
       },
-      timeout: Duration.seconds(30),
+      timeout: Duration.minutes(5)
     })
 
     const apiGateway = new RestApi(this, `${stackName}Gateway`, {
