@@ -88,16 +88,24 @@ async function completeChat({ openAiApi, slackBotToken, context, client, say, lo
     })
   } catch (e: unknown) {
     logger.error(e)
+    const message = (e instanceof Error) ? e.toString() : JSON.stringify(e)
     await say({
       channel: channel,
-      text: `Unexpected error occurs. Please start a conversation in a new thread for possible token fishing results.`,
       thread_ts: threadTs,
+      text: `Unexpected error occurs. Please start a conversation in a new thread: ${message}`,
     })
   }
 }
 
 function guardRetry(context: Context, logger: Logger): boolean {
-  if (context.retryNum === null || context.retryReason !== 'http_timeout') {
+  if (context.retryNum === undefined || context.retryReason !== 'http_timeout') {
+    // Add debug log to investigate duplicated responses.
+    if (context.retryNum !== undefined) {
+      logger.debug({
+        retryNum: context.retryNum,
+        retryReason: context.retryReason,
+      })
+    }
     return false
   }
 
