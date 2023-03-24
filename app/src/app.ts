@@ -1,8 +1,11 @@
-import { App, Context, SayFn } from '@slack/bolt'
+import { App, Context, SlackEventMiddlewareArgs, AllMiddlewareArgs } from '@slack/bolt'
 import { Logger } from '@slack/logger'
-import { WebClient, ConversationsRepliesResponse } from '@slack/web-api'
+import { ConversationsRepliesResponse } from '@slack/web-api'
 import { ChatCompletionRequestMessage, ChatCompletionRequestMessageRoleEnum, Configuration, OpenAIApi } from 'openai'
 
+function newBotMentionRegExp(context: Context): RegExp {
+  return new RegExp(`[\s\r\n]*<@${context.botUserId}>[\s\r\n]*`)
+}
 
 function toChatCompletionRequestMessages(context: Context, replies: ConversationsRepliesResponse): ChatCompletionRequestMessage[] {
   if (!replies.messages) {
@@ -11,8 +14,8 @@ function toChatCompletionRequestMessages(context: Context, replies: Conversation
 
   // TODO このあたりで createChatCompletion のパラメータ抽出する？
 
-  const botMentionRe = new RegExp(`^<@${context.botUserId}>[ \t\r\n]*`)
-  const messages = replies.messages.map((m) => {
+  const botMentionRe = newBotMentionRegExp(context)
+  return replies.messages.map((m) => {
     const content = m.text ?? ''
     if (botMentionRe.test(content)) {
       return {
@@ -31,23 +34,17 @@ function toChatCompletionRequestMessages(context: Context, replies: Conversation
       content
     }
   })
+}
 
-  // Create single content to have a single conversation in a thread.
-  const tail = messages.length - 1
-  if (messages[0].role !== ChatCompletionRequestMessageRoleEnum.System) {
-    return (messages[tail].role === ChatCompletionRequestMessageRoleEnum.System)
-      ? [{
-          role: ChatCompletionRequestMessageRoleEnum.User,
-          content: messages[tail].content,
-        }]
-      : []
+function dropMessages(messages: ChatCompletionRequestMessage[]): ChatCompletionRequestMessage[] {
+  if (messages.length === 0) {
+    return []
   }
 
-  // Drop past contents to reduce token consumption.
   const nonSystemIndices = messages
     .map((v, i) => v.role !== ChatCompletionRequestMessageRoleEnum.System ? i : -1)
     .filter((i) => i !== -1)
-  const availableNonSystemMessageCount = 13 // Need to adjust
+  const availableNonSystemMessageCount = 13 // Should be as long as possible
   if (nonSystemIndices.length <= availableNonSystemMessageCount) {
     return messages
   }
@@ -56,34 +53,45 @@ function toChatCompletionRequestMessages(context: Context, replies: Conversation
 }
 
 type CompleteChatProps = {
-  openAiApi: OpenAIApi
+  openAiApi: OpenAIApi,
   slackBotToken: string,
-  context: Context,
-  client: WebClient,
-  say: SayFn,
-  logger: Logger,
-  channel: string,
-  threadTs: string
-
+  args: SlackEventMiddlewareArgs<'app_mention' | 'message'> & AllMiddlewareArgs,
+  mapRequests: (messages: ChatCompletionRequestMessage[]) => ChatCompletionRequestMessage[]
 }
 
-async function completeChat({ openAiApi, slackBotToken, context, client, say, logger, channel, threadTs }: CompleteChatProps) {
+async function completeChat({
+  openAiApi,
+  slackBotToken,
+  args,
+  mapRequests,
+}: CompleteChatProps) {
+  const { context, client, event, say, logger } = args
+  const channel = event.channel
+  const thread_ts = ('thread_ts' in event) ? (event.thread_ts ?? event.ts) : event.ts
+
   const replies = await client.conversations.replies({
     token: slackBotToken,
     channel,
-    ts: threadTs,
+    ts: thread_ts,
     inclusive: true,
   })
 
-
-  const messages = toChatCompletionRequestMessages(context, replies)
+  const requests = toChatCompletionRequestMessages(context, replies)
+  logger.debug('requests', requests.length)
+  if (requests.length === 0) {
+    return
+  }
+  // TODO assistantが連続で喋ったら連続しているもののうち最新だけ残す？
+  const mapped = mapRequests(requests)
+  logger.debug('mapped', mapped.length)
+  if (mapped.length === 0) {
+    return
+  }
+  const messages = dropMessages(mapped)
+  logger.debug('dropped', messages.length)
   if (messages.length === 0) {
     return
   }
-
-  logger.debug({
-    messag: JSON.stringify(messages, undefined, 2)
-  })
 
   try {
     const completion = await openAiApi.createChatCompletion({
@@ -91,8 +99,8 @@ async function completeChat({ openAiApi, slackBotToken, context, client, say, lo
       messages,
     })
     await say({
-      channel: channel,
-      thread_ts: threadTs,
+      channel,
+      thread_ts,
       text: completion.data.choices[0].message?.content
     })
     logger.debug({
@@ -102,8 +110,8 @@ async function completeChat({ openAiApi, slackBotToken, context, client, say, lo
     logger.error(e)
     const message = (e instanceof Error) ? e.toString() : JSON.stringify(e)
     await say({
-      channel: channel,
-      thread_ts: threadTs,
+      channel,
+      thread_ts,
       text: `Unexpected error occurs. Please start a conversation in a new thread: ${message}`,
     })
   }
@@ -120,38 +128,58 @@ function guardRetry(context: Context, logger: Logger): boolean {
   return true
 }
 
+function convertSystemToUser(message: ChatCompletionRequestMessage[]): ChatCompletionRequestMessage[] {
+  return message.map(
+    (m) => (m.role === 'system')
+      ? { ...m, role: ChatCompletionRequestMessageRoleEnum.User }
+      : m
+  )
+}
+
 export function setup(app: App, openAiApiKey: string, slackBotToken: string): { openAiApi: OpenAIApi } {
   const openAiApi = new OpenAIApi(new Configuration({
     apiKey: openAiApiKey
   }))
 
-  // To have a thread-wide conversation, mentions at the beginning of the thread.
-  // To have a single conversation in a thread, mentions it in the thread.
-
-  app.event('app_mention', async ({ event, client, say, context, logger }) => {
+  app.event('app_mention', async (args) => {
+    const { context, logger, event } = args
+    logger.debug('event', event.type)
     if (guardRetry(context, logger)) {
       return
     }
-    if ('thread_ts' in event) {
-      return
-    }
 
-    const channel = event.channel
-    const threadTs = event.thread_ts ?? event.ts
-    await completeChat({ openAiApi, slackBotToken, context, client, say, logger, channel, threadTs })
+    await completeChat({
+      openAiApi,
+      slackBotToken,
+      args,
+      mapRequests: (rs) => rs[0].role === 'system' ? rs : convertSystemToUser(rs),
+    })
   })
 
-  app.event('message', async ({ event, say, client, context, logger }) => {
+  app.event('message', async (args) => {
+    const { context, logger, event } = args
+    logger.debug('event', event.type)
     if (guardRetry(context, logger)) {
       return
     }
+    // Reply in threads only.
     if (!('thread_ts' in event)) {
       return
     }
+    if ('text' in args.message) {
+      const botMention = newBotMentionRegExp(context)
+      if (args.message.text && botMention.test(args.message.text)) {
+        logger.debug('The message event detects bot mention. Skip.')
+        return
+      }
+    }
 
-    const channel = event.channel
-    const threadTs = event.thread_ts!
-    await completeChat({ openAiApi, slackBotToken, context, client, say, logger, channel, threadTs })
+    await completeChat({
+      openAiApi,
+      slackBotToken,
+      args,
+      mapRequests: (rs) => (rs[0].role === 'system') ? rs : [],
+    })
   })
 
   return {
