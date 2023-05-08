@@ -55,6 +55,7 @@ function dropMessages(messages: ChatCompletionRequestMessage[]): ChatCompletionR
 type CompleteChatProps = {
   openAiApi: OpenAIApi,
   slackBotToken: string,
+  chatModelName: string,
   args: SlackEventMiddlewareArgs<'app_mention' | 'message'> & AllMiddlewareArgs,
   mapRequests: (messages: ChatCompletionRequestMessage[]) => ChatCompletionRequestMessage[]
 }
@@ -62,6 +63,7 @@ type CompleteChatProps = {
 async function completeChat({
   openAiApi,
   slackBotToken,
+  chatModelName,
   args,
   mapRequests,
 }: CompleteChatProps) {
@@ -95,7 +97,7 @@ async function completeChat({
 
   try {
     const completion = await openAiApi.createChatCompletion({
-      model: 'gpt-3.5-turbo',
+      model: chatModelName,
       messages,
     })
     await say({
@@ -136,10 +138,24 @@ function convertSystemToUser(message: ChatCompletionRequestMessage[]): ChatCompl
   )
 }
 
-export function setup(app: App, openAiApiKey: string, slackBotToken: string): { openAiApi: OpenAIApi } {
+type SetupProps = {
+  app: App,
+  openAiApiKey: string,
+  slackBotToken: string,
+  chatModelName: string,
+}
+
+export function setup({
+  app,
+  openAiApiKey,
+  slackBotToken,
+  chatModelName,
+}: SetupProps): { openAiApi: OpenAIApi } {
   const openAiApi = new OpenAIApi(new Configuration({
     apiKey: openAiApiKey
   }))
+
+  console.info(`Chat model name: ${chatModelName}`)
 
   app.event('app_mention', async (args) => {
     const { context, logger, event } = args
@@ -151,6 +167,7 @@ export function setup(app: App, openAiApiKey: string, slackBotToken: string): { 
     await completeChat({
       openAiApi,
       slackBotToken,
+      chatModelName,
       args,
       mapRequests: (rs) => rs[0].role === 'system' ? rs : convertSystemToUser(rs),
     })
@@ -177,6 +194,7 @@ export function setup(app: App, openAiApiKey: string, slackBotToken: string): { 
     await completeChat({
       openAiApi,
       slackBotToken,
+      chatModelName,
       args,
       mapRequests: (rs) => (rs[0].role === 'system') ? rs : [],
     })

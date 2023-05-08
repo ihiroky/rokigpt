@@ -13,6 +13,7 @@ export class RokiGptStack extends Stack {
     const slackSigningSecret = StringParameter.valueForStringParameter(this, `${stackName}SlackSigningSecret`)
     const slackBotToken = StringParameter.valueForStringParameter(this, `${stackName}SlackBotToken`)
     const openAiApiKey = StringParameter.valueForStringParameter(this, `${stackName}OpenAiApiKey`)
+    const chatModelName = StringParameter.valueForStringParameter(this, `${stackName}ChatModelName`)
 
     const lambdaFunction = new NodejsFunction(this, `${stackName}Function`, {
       runtime: Runtime.NODEJS_18_X,
@@ -21,6 +22,7 @@ export class RokiGptStack extends Stack {
         SLACK_SIGNING_SECRET: slackSigningSecret,
         SLACK_BOT_TOKEN: slackBotToken,
         OPEN_AI_API_KEY: openAiApiKey,
+        CHAT_MODEL_NAME: chatModelName,
       },
       timeout: Duration.minutes(5)
     })
