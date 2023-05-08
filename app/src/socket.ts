@@ -3,6 +3,7 @@ import { setup } from './app'
 
 const openAiApiKey = process.env.OPEN_AI_API_KEY ?? ''
 const slackBotToken = process.env.SLACK_BOT_TOKEN ?? ''
+const chatModelName = process.env.CHAT_MODEL_NAME ?? 'gpt-3.5-turbo'
 const app = new App({
   token: slackBotToken,
   signingSecret: process.env.SLACK_SIGNING_SECRET,
@@ -10,7 +11,7 @@ const app = new App({
   appToken: process.env.SLACK_APP_TOKEN,
 })
 
-const { openAiApi } = setup(app, openAiApiKey, slackBotToken)
+const { openAiApi } = setup({ app, openAiApiKey, slackBotToken, chatModelName })
 
 ;(async () => {
   await openAiApi.listModels().then((d) => {
