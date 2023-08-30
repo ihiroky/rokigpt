@@ -15,14 +15,8 @@ function toChatCompletionRequestMessages(context: Context, replies: Conversation
   // TODO このあたりで createChatCompletion のパラメータ抽出する？
 
   const botMentionRe = newBotMentionRegExp(context)
-  return replies.messages.map((m) => {
+  const msgs: ChatCompletionRequestMessage[] = replies.messages.map((m) => {
     const content = m.text ?? ''
-    if (botMentionRe.test(content)) {
-      return {
-        role: ChatCompletionRequestMessageRoleEnum.System,
-        content: content.replace(botMentionRe, '')
-      }
-    }
     if (m.bot_id && m.bot_id === context.botId) {
       return {
         role: ChatCompletionRequestMessageRoleEnum.Assistant,
@@ -31,9 +25,17 @@ function toChatCompletionRequestMessages(context: Context, replies: Conversation
     }
     return {
       role: ChatCompletionRequestMessageRoleEnum.User,
-      content
+      content: content.replace(botMentionRe, '')
     }
   })
+
+  // TODO modifiable by user.
+  msgs.unshift({
+    role: ChatCompletionRequestMessageRoleEnum.System,
+    content: 'You are a helpful startup assistant.',
+  })
+
+  return msgs
 }
 
 function dropMessages(messages: ChatCompletionRequestMessage[]): ChatCompletionRequestMessage[] {
@@ -57,7 +59,6 @@ type CompleteChatProps = {
   slackBotToken: string,
   chatModelName: string,
   args: SlackEventMiddlewareArgs<'app_mention' | 'message'> & AllMiddlewareArgs,
-  mapRequests: (messages: ChatCompletionRequestMessage[]) => ChatCompletionRequestMessage[]
 }
 
 async function completeChat({
@@ -65,7 +66,6 @@ async function completeChat({
   slackBotToken,
   chatModelName,
   args,
-  mapRequests,
 }: CompleteChatProps) {
   const { context, client, event, say, logger } = args
   const channel = event.channel
@@ -83,13 +83,7 @@ async function completeChat({
   if (requests.length === 0) {
     return
   }
-  // TODO assistantが連続で喋ったら連続しているもののうち最新だけ残す？
-  const mapped = mapRequests(requests)
-  logger.debug('mapped', mapped.length)
-  if (mapped.length === 0) {
-    return
-  }
-  const messages = dropMessages(mapped)
+  const messages = dropMessages(requests)
   logger.debug('dropped', messages.length)
   if (messages.length === 0) {
     return
@@ -130,14 +124,6 @@ function guardRetry(context: Context, logger: Logger): boolean {
   return true
 }
 
-function convertSystemToUser(message: ChatCompletionRequestMessage[]): ChatCompletionRequestMessage[] {
-  return message.map(
-    (m) => (m.role === 'system')
-      ? { ...m, role: ChatCompletionRequestMessageRoleEnum.User }
-      : m
-  )
-}
-
 type SetupProps = {
   app: App,
   openAiApiKey: string,
@@ -169,7 +155,6 @@ export function setup({
       slackBotToken,
       chatModelName,
       args,
-      mapRequests: (rs) => rs[0].role === 'system' ? rs : convertSystemToUser(rs),
     })
   })
 
@@ -183,6 +168,7 @@ export function setup({
     if (!('thread_ts' in event)) {
       return
     }
+    // Skip if the message in the thread is bot mention.
     if ('text' in args.message) {
       const botMention = newBotMentionRegExp(context)
       if (args.message.text && botMention.test(args.message.text)) {
@@ -196,7 +182,6 @@ export function setup({
       slackBotToken,
       chatModelName,
       args,
-      mapRequests: (rs) => (rs[0].role === 'system') ? rs : [],
     })
   })
 
