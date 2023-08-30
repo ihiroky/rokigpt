@@ -28,7 +28,7 @@ npm install
 npx cdk deploy RokiGptStack -c target=prod
 ```
 
-### Slack App configuration
+## Slack App configuration
 - Bot Token Scopes in OAuth & Permissions
   - `app_mentions:read`
   - `channels:history`
