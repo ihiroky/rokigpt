@@ -59,6 +59,7 @@ type CompleteChatProps = {
   slackBotToken: string,
   chatModelName: string,
   args: SlackEventMiddlewareArgs<'app_mention' | 'message'> & AllMiddlewareArgs,
+  isCompletable: (context: AllMiddlewareArgs['context'], replies: ConversationsRepliesResponse) => boolean,
 }
 
 async function completeChat({
@@ -66,6 +67,7 @@ async function completeChat({
   slackBotToken,
   chatModelName,
   args,
+  isCompletable,
 }: CompleteChatProps) {
   const { context, client, event, say, logger } = args
   const channel = event.channel
@@ -77,6 +79,9 @@ async function completeChat({
     ts: thread_ts,
     inclusive: true,
   })
+  if (!isCompletable(context, replies)) {
+    return
+  }
 
   const requests = toChatCompletionRequestMessages(context, replies)
   logger.debug('requests', requests.length)
@@ -124,6 +129,15 @@ function guardRetry(context: Context, logger: Logger): boolean {
   return true
 }
 
+function isFirstMessageMentioned(context: AllMiddlewareArgs['context'], replies: ConversationsRepliesResponse): boolean {
+  if (!replies.messages || replies.messages.length === 0 || !replies.messages[0].text) {
+    return false
+  }
+
+  const botMention = newBotMentionRegExp(context)
+  return botMention.test(replies.messages[0].text)
+}
+
 type SetupProps = {
   app: App,
   openAiApiKey: string,
@@ -155,20 +169,23 @@ export function setup({
       slackBotToken,
       chatModelName,
       args,
+      isCompletable: () => true,
     })
   })
 
+  /**
+   * Reply only in a thread if its first message is bot mentioned.
+   */
   app.event('message', async (args) => {
     const { context, logger, event } = args
     logger.debug('event', event.type)
     if (guardRetry(context, logger)) {
       return
     }
-    // Reply in threads only.
     if (!('thread_ts' in event)) {
       return
     }
-    // Skip if the message in the thread is bot mention.
+    // Stop if this message in the thread is bot mention, which is replied by 'app_mention'.
     if ('text' in args.message) {
       const botMention = newBotMentionRegExp(context)
       if (args.message.text && botMention.test(args.message.text)) {
@@ -182,6 +199,7 @@ export function setup({
       slackBotToken,
       chatModelName,
       args,
+      isCompletable: isFirstMessageMentioned,
     })
   })
 
